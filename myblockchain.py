@@ -16,13 +16,12 @@ class Blockchain:
         # 网络节点
         self.nodes = set()
         # 创世区块
-        self.new_block(previous_hash='1', proof=100)
-
+        # self.new_block(previous_hash='1', proof=100)
 
     def register_node(self, address):
         '''
         添加新的节点进入区块链网络，分布式的目的是去中心化
-        :param address: 新节点网络地址，如：192.168.5.20:1314
+        :param address: 新节点网络地址，如：http://192.168.5.20:1314
         '''
         # urlparse解析url <scheme>://<netloc>/<path>;<params>?<query>#<fragment>
         parsed_url = urlparse(address)
@@ -50,7 +49,7 @@ class Blockchain:
             if block['previous_hash'] != self.hash(last_block):
                 return False
             # 验证工作量证明是否计算正确
-            if not self.valid_proof(last_block['proof'], block['proof']):
+            if not self.valid_proof(block['proof'], block['previous_hash']):
                 return False
             last_block = block
             current_index += 1
@@ -70,7 +69,6 @@ class Blockchain:
             # 访问节点的一个接口，拿到该接口的区块链长度和区块链本身
             try:
                 response = requests.get(f'http://{node}/chain')
-
                 if response.status_code == 200:
                     length = response.json()['length']
                     chain = response.json()['chain']
@@ -87,7 +85,6 @@ class Blockchain:
             self.chain = new_chain
             return True
         return False
-
 
     def new_block(self, proof, previous_hash):
         '''
@@ -110,12 +107,11 @@ class Blockchain:
             # 上一块区块的hash
             'previous_hash':previous_hash or self.hash(self.chain[-1])
         }
-
+        # 从新置空
         self.current_transactions = []
         # 将区块添加到区块链中，此时交易账本是空，工作量证明是空
         self.chain.append(block)
         return block
-
 
     def new_transaction(self, sender, recipient, amount):
         '''
@@ -125,12 +121,27 @@ class Blockchain:
         :param amount: 数字币数量
         :return: 记录本次交易的区块索引
         '''
+        money = 0
+        if sender != '0':
+            # 判断发送者是否有足够多的数字货币用于交易
+            for block in self.chain:
+                for transactions in block['transactions']:
+                    if transactions['sender'] == sender:
+                        money -= transactions['amount']
+                    if transactions['recipient'] == sender:
+                        money += transactions['amount']
+
+            if money < amount:
+                return -1
+
         # 交易账本，可包含多个交易
         self.current_transactions.append({
             'sender':sender,
             'recipient':recipient,
             'amount':amount
         })
+        if not self.chain:
+            return 0
         # 交易账本添加到最新的区块中
         return self.last_block['index'] + 1
 
@@ -152,7 +163,7 @@ class Blockchain:
         block_string = json.dumps(block, sort_keys=True).encode()
         return hashlib.sha256(block_string).hexdigest()
 
-    def proof_of_work(self, last_proof):
+    def proof_of_work(self, last_block):
         '''
         简单的工作量证明算法
         找到一个数，使得区块的hash前4位为0
@@ -161,14 +172,16 @@ class Blockchain:
         '''
 
         # 工作量证明--->穷举法计算出特殊的数
+        last_proof = last_block['proof']
+        last_hash = self.hash(last_block)
         proof = 0
-        while self.valid_proof(last_proof, proof) is False:
+        while self.valid_proof(proof,last_hash) is False:
             proof += 1
 
         return proof
 
     @staticmethod
-    def valid_proof(last_proof, proof):
+    def valid_proof(proof, last_hash):
         '''
         验证工作量证明，计算出的hash是否正确
         对上一个区块的proof和hash与当期区块的proof最sha256运算
@@ -178,7 +191,7 @@ class Blockchain:
         :return: True 工作量是正确的 False 错误
         '''
         # f-string pyton3.6新的格式化字符串函数
-        guess = f'{last_proof}{proof}'.encode()
+        guess = f'{proof}{last_hash}'.encode()
         guess_hash = hashlib.sha256(guess).hexdigest()
         return guess_hash[:4] == "0000"
 
@@ -197,11 +210,22 @@ def mine():
     建立新区块
     :return:
     '''
+    if not blockchain.chain:
+        blockchain.new_transaction(sender='0', recipient=node_identifier, amount=50)
+        block = blockchain.new_block(previous_hash='1', proof=100)
+        response = {
+            'message': '创世区块建立',
+            'index': block['index'],
+            'transactions': block['transactions'],
+            'proof': block['proof'],
+            'previous_hash': block['previous_hash'],
+        }
+        return jsonify(response), 200
+
     last_block = blockchain.last_block
-    last_proof = last_block['proof']
-    proof = blockchain.proof_of_work(last_proof)
+    proof = blockchain.proof_of_work(last_block)
     # 挖矿获得一个数字货币奖励，将奖励的交易记录添加到账本中，其他的交易记录通过new_transaction接口添加
-    blockchain.new_transaction(sender='0', recipient=node_identifier, amount=1)
+    blockchain.new_transaction(sender='0', recipient=node_identifier, amount=6)
 
     previous_hash = blockchain.hash(last_block)
     block = blockchain.new_block(proof, previous_hash)
@@ -229,6 +253,8 @@ def new_transaction():
         return '缺失必要字段',400
 
     index = blockchain.new_transaction(values['sender'], values['recipient'],values['amount'])
+    if index == -1:
+        return '余额不足',400
     response = {'message':f'交易账本被添加到新的区块中{index}'}
     return jsonify(response),201
 
